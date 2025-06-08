@@ -2,13 +2,15 @@ import boto3
 import os
 from datetime import date, timedelta, datetime
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from zoneinfo import ZoneInfo
 
 AWS_SOURCE_EMAIL="EXAMPLE@EXAMPLE.com"
 AWS_REGION="REGION_NAME"
 AWS_DEST_EMAIL=["EXAMPLE@EXAMPLE.com"]
 
 def get_costs():
-    today = date.today()
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    today = now_jst.date()
     yesterday = today - timedelta(days=1)
     start_of_month = today.replace(day=1)
 
@@ -26,7 +28,8 @@ def get_costs():
         "Tax",
         "Amazon CloudFront",
         "AWS Lambda",
-        "Amazon CloudWatch"
+        "Amazon CloudWatch",
+        "AWS Cost Explorer"
     ]
 
     def fetch(start, end):
@@ -84,7 +87,8 @@ def get_detailed_breakdown():
         "Tax",
         "Amazon CloudFront",
         "AWS Lambda",
-        "Amazon CloudWatch"
+        "Amazon CloudWatch",
+        "AWS Cost Explorer"
     ]
 
     def fetch(start, end):
@@ -150,7 +154,8 @@ def notify(cost_data):
         "Tax": "Tax",
         "Amazon CloudFront": "CDN",
         "AWS Lambda": "Lambda",
-        "Amazon CloudWatch": "Logs"
+        "Amazon CloudWatch": "Logs",
+        "AWS Cost Explorer": "CE"
     }
 
     client = boto3.client('ce', region_name=AWS_REGION)

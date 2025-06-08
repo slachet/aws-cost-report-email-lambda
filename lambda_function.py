@@ -8,14 +8,15 @@ AWS_SOURCE_EMAIL="EXAMPLE@EXAMPLE.com"
 AWS_REGION="REGION_NAME"
 AWS_DEST_EMAIL=["EXAMPLE@EXAMPLE.com"]
 
-def get_costs():
+def get_all_cost_data():
+    """Fetch all cost data with minimal API calls"""
     now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
     today = now_jst.date()
     yesterday = today - timedelta(days=1)
     start_of_month = today.replace(day=1)
-
+    
     client = boto3.client('ce')
-
+    
     services = [
         "Amazon Elastic Compute Cloud - Compute",
         "EC2 - Other",
@@ -32,118 +33,73 @@ def get_costs():
         "AWS Cost Explorer",
         "AWS Config"
     ]
-
-    def fetch(start, end):
-        response = client.get_cost_and_usage(
-            TimePeriod={"Start": str(start), "End": str(end)},
-            Granularity="DAILY",
-            Metrics=["UnblendedCost"],
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-            Filter={"Dimensions": {"Key": "SERVICE", "Values": services}}
-        )
-        return response.get("ResultsByTime", [])[0].get("Groups", [])
-
-    costs_yesterday = fetch(yesterday, today)
-    costs_mtd = fetch(start_of_month, today)
-
-    usage = {}
-    for entry in costs_yesterday:
-        service = entry["Keys"][0]
-        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
-        usage[service] = {"yesterday": cost, "mtd": 0.0}
-
-    for entry in costs_mtd:
-        service = entry["Keys"][0]
-        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
-        if service in usage:
-            usage[service]["mtd"] = cost
-        else:
-            usage[service] = {"yesterday": 0.0, "mtd": cost}
-
-    result = [
-        {"service": s, "yesterday": v["yesterday"], "mtd": v["mtd"]}
-        for s, v in usage.items()
-    ]
-    result.sort(key=lambda x: x["mtd"], reverse=True)
-    return result
-
-
-def get_detailed_breakdown():
-    """Return list of dicts with service, usage_type, yesterday_cost, mtd_cost."""
-    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
-    today = now_jst.date()
-    yesterday = today - timedelta(days=1)
-    start_of_month = today.replace(day=1)
-    client = boto3.client('ce')
-
-    services = [
-        "Amazon Elastic Compute Cloud - Compute",
-        "EC2 - Other",
-        "EC2 - ELB",
-        "Amazon Elastic Block Store",
-        "AWS Key Management Service",
-        "Amazon Virtual Private Cloud",
-        "Amazon Route 53",
-        "Amazon Simple Storage Service",
-        "Tax",
-        "Amazon CloudFront",
-        "AWS Lambda",
-        "Amazon CloudWatch",
-        "AWS Cost Explorer",
-        "AWS Config"
-    ]
-
-    def fetch(start, end):
-        response = client.get_cost_and_usage(
-            TimePeriod={"Start": str(start), "End": str(end)},
-            Granularity="DAILY",
-            Metrics=["UnblendedCost"],
-            GroupBy=[
-                {"Type": "DIMENSION", "Key": "SERVICE"},
-                {"Type": "DIMENSION", "Key": "USAGE_TYPE"}
-            ],
-            Filter={"Dimensions": {"Key": "SERVICE", "Values": services}}
-        )
-        return response.get("ResultsByTime", [])[0].get("Groups", [])
-
-    costs_yesterday = fetch(yesterday, today)
-    costs_mtd = fetch(start_of_month, today)
-
-    usage = {}
-
-    # Store yesterday costs keyed by (service, usage_type)
-    for entry in costs_yesterday:
-        service, usage_type = entry["Keys"]
-        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
-        usage[(service, usage_type)] = {"yesterday": cost, "mtd": 0.0}
-
-    # Add MTD costs
-    for entry in costs_mtd:
-        service, usage_type = entry["Keys"]
-        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
-        if (service, usage_type) in usage:
-            usage[(service, usage_type)]["mtd"] = cost
-        else:
-            usage[(service, usage_type)] = {"yesterday": 0.0, "mtd": cost}
-
-    result = [
-        {
-            "service": s,
-            "usage_type": u,
-            "yesterday": v["yesterday"],
-            "mtd": v["mtd"]
+    
+    # API Call 1: Get daily breakdown for the entire month (includes yesterday)
+    response_daily = client.get_cost_and_usage(
+        TimePeriod={"Start": str(start_of_month), "End": str(today)},
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+        GroupBy=[
+            {"Type": "DIMENSION", "Key": "SERVICE"},
+            {"Type": "DIMENSION", "Key": "USAGE_TYPE"}
+        ],
+        Filter={"Dimensions": {"Key": "SERVICE", "Values": services}}
+    )
+    
+    # API Call 2: Get monthly totals with both metrics
+    response_monthly = client.get_cost_and_usage(
+        TimePeriod={"Start": str(start_of_month), "End": str(today)},
+        Granularity="MONTHLY",
+        Metrics=["UnblendedCost", "AmortizedCost"]
+    )
+    
+    # Process the data
+    service_costs = {}  # {service: {yesterday: x, mtd: y}}
+    detailed_costs = {}  # {(service, usage_type): {yesterday: x, mtd: y}}
+    
+    # Process daily data
+    for day_result in response_daily.get("ResultsByTime", []):
+        day_date = datetime.strptime(day_result["TimePeriod"]["Start"], "%Y-%m-%d").date()
+        is_yesterday = (day_date == yesterday)
+        
+        for group in day_result.get("Groups", []):
+            service, usage_type = group["Keys"]
+            cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
+            
+            # Update service-level costs
+            if service not in service_costs:
+                service_costs[service] = {"yesterday": 0.0, "mtd": 0.0}
+            service_costs[service]["mtd"] += cost
+            if is_yesterday:
+                service_costs[service]["yesterday"] += cost
+            
+            # Update detailed costs
+            key = (service, usage_type)
+            if key not in detailed_costs:
+                detailed_costs[key] = {"yesterday": 0.0, "mtd": 0.0}
+            detailed_costs[key]["mtd"] += cost
+            if is_yesterday:
+                detailed_costs[key]["yesterday"] += cost
+    
+    # Get monthly totals
+    monthly_totals = response_monthly['ResultsByTime'][0]['Total']
+    accumulated_unblended_cost = monthly_totals['UnblendedCost']['Amount']
+    accumulated_amortized_cost = monthly_totals['AmortizedCost']['Amount']
+    
+    return {
+        "service_costs": service_costs,
+        "detailed_costs": detailed_costs,
+        "monthly_totals": {
+            "unblended": accumulated_unblended_cost,
+            "amortized": accumulated_amortized_cost
+        },
+        "period": {
+            "start": str(start_of_month),
+            "end": str(today)
         }
-        for (s, u), v in usage.items() if v["mtd"] > 0.0001
-    ]
-
-    # Sort by mtd descending
-    result.sort(key=lambda x: x["mtd"], reverse=True)
-    return result
-
+    }
 
 def notify(cost_data):
-
-    # Mapping full service names to simpler aliases
     service_aliases = {
         "Amazon Simple Storage Service": "S3",
         "Amazon Elastic Compute Cloud - Compute": "EC2",
@@ -160,30 +116,30 @@ def notify(cost_data):
         "AWS Cost Explorer": "CE",
         "AWS Config": "Config"
     }
-
-    client = boto3.client('ce', region_name=AWS_REGION)
-    today = date.today()
-    start_date = str(today.replace(day=1))
-    end_date = str(today)
-
-    response1 = client.get_cost_and_usage(
-        TimePeriod={'Start': start_date, 'End': end_date},
-        Granularity='MONTHLY',
-        Metrics=['AmortizedCost']
-    )
-    response2 = client.get_cost_and_usage(
-        TimePeriod={'Start': start_date, 'End': end_date},
-        Granularity='MONTHLY',
-        Metrics=['UnblendedCost']
-    )
-    accumulated_amortized_cost = response1['ResultsByTime'][0]['Total']['AmortizedCost']['Amount']
-    accumulated_unblended_cost = response2['ResultsByTime'][0]['Total']['UnblendedCost']['Amount']
-
-    detailed_breakdown = get_detailed_breakdown()
-
+    
     def alias(service_name):
         return service_aliases.get(service_name, service_name)
-
+    
+    # Prepare service-level data
+    service_list = [
+        {"service": s, "yesterday": v["yesterday"], "mtd": v["mtd"]}
+        for s, v in cost_data["service_costs"].items()
+    ]
+    service_list.sort(key=lambda x: x["mtd"], reverse=True)
+    
+    # Prepare detailed data
+    detailed_list = [
+        {
+            "service": s,
+            "usage_type": u,
+            "yesterday": v["yesterday"],
+            "mtd": v["mtd"]
+        }
+        for (s, u), v in cost_data["detailed_costs"].items()
+        if v["mtd"] > 0.0001
+    ]
+    detailed_list.sort(key=lambda x: x["mtd"], reverse=True)
+    
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -200,9 +156,9 @@ def notify(cost_data):
                 <th style="border: 1px solid #ddd; padding: 8px;">Amortized Cost</th>
             </tr>
             <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;">{start_date} - {end_date}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${float(accumulated_unblended_cost):,.4f}</td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${float(accumulated_amortized_cost):,.4f}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">{cost_data["period"]["start"]} - {cost_data["period"]["end"]}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${float(cost_data["monthly_totals"]["unblended"]):,.4f}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${float(cost_data["monthly_totals"]["amortized"]):,.4f}</td>
             </tr>
         </table>
 
@@ -214,8 +170,8 @@ def notify(cost_data):
                 <th style="border: 1px solid #ddd; padding: 8px;">Cost (Month to Date)</th>
             </tr>
     """
-
-    for item in cost_data:
+    
+    for item in service_list:
         html_content += f"""
             <tr>
                 <td style="border: 1px solid #ddd; padding: 8px;">{alias(item['service'])}</td>
@@ -223,7 +179,7 @@ def notify(cost_data):
                 <td style="border: 1px solid #ddd; padding: 8px;">${item['mtd']:.4f}</td>
             </tr>
         """
-
+    
     html_content += """
         </table>
 
@@ -236,8 +192,8 @@ def notify(cost_data):
                 <th style="border: 1px solid #ddd; padding: 8px;">Cost (Month to Date)</th>
             </tr>
     """
-
-    for item in detailed_breakdown:
+    
+    for item in detailed_list:
         html_content += f"""
             <tr>
                 <td style="border: 1px solid #ddd; padding: 8px;">{alias(item['service'])}</td>
@@ -246,13 +202,13 @@ def notify(cost_data):
                 <td style="border: 1px solid #ddd; padding: 8px;">${item['mtd']:.4f}</td>
             </tr>
         """
-
+    
     html_content += """
         </table>
     </body>
     </html>
     """
-
+    
     try:
         ses = boto3.client('ses', region_name=AWS_REGION)
         response = ses.send_email(
@@ -272,7 +228,7 @@ def notify(cost_data):
             }
         )
         print("Email sent! Message ID:", response['MessageId'])
-
+        
     except NoCredentialsError:
         print("Credentials not available.")
     except PartialCredentialsError:
@@ -280,8 +236,6 @@ def notify(cost_data):
     except Exception as e:
         print("Error occurred:", str(e))
 
-
-
 def lambda_handler(a, b):
-    cost_data = get_costs()
+    cost_data = get_all_cost_data()
     notify(cost_data)

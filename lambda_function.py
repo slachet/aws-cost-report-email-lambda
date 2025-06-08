@@ -29,14 +29,15 @@ def get_costs():
         "Amazon CloudFront",
         "AWS Lambda",
         "Amazon CloudWatch",
-        "AWS Cost Explorer"
+        "AWS Cost Explorer",
+        "AWS Config"
     ]
 
     def fetch(start, end):
         response = client.get_cost_and_usage(
             TimePeriod={"Start": str(start), "End": str(end)},
             Granularity="DAILY",
-            Metrics=["BlendedCost"],
+            Metrics=["UnblendedCost"],
             GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
             Filter={"Dimensions": {"Key": "SERVICE", "Values": services}}
         )
@@ -48,12 +49,12 @@ def get_costs():
     usage = {}
     for entry in costs_yesterday:
         service = entry["Keys"][0]
-        cost = float(entry["Metrics"]["BlendedCost"]["Amount"])
+        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
         usage[service] = {"yesterday": cost, "mtd": 0.0}
 
     for entry in costs_mtd:
         service = entry["Keys"][0]
-        cost = float(entry["Metrics"]["BlendedCost"]["Amount"])
+        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
         if service in usage:
             usage[service]["mtd"] = cost
         else:
@@ -61,7 +62,7 @@ def get_costs():
 
     result = [
         {"service": s, "yesterday": v["yesterday"], "mtd": v["mtd"]}
-        for s, v in usage.items() if v["mtd"] > 0
+        for s, v in usage.items()
     ]
     result.sort(key=lambda x: x["mtd"], reverse=True)
     return result
@@ -69,10 +70,10 @@ def get_costs():
 
 def get_detailed_breakdown():
     """Return list of dicts with service, usage_type, yesterday_cost, mtd_cost."""
-    today = date.today()
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    today = now_jst.date()
     yesterday = today - timedelta(days=1)
     start_of_month = today.replace(day=1)
-
     client = boto3.client('ce')
 
     services = [
@@ -88,14 +89,15 @@ def get_detailed_breakdown():
         "Amazon CloudFront",
         "AWS Lambda",
         "Amazon CloudWatch",
-        "AWS Cost Explorer"
+        "AWS Cost Explorer",
+        "AWS Config"
     ]
 
     def fetch(start, end):
         response = client.get_cost_and_usage(
             TimePeriod={"Start": str(start), "End": str(end)},
             Granularity="DAILY",
-            Metrics=["BlendedCost"],
+            Metrics=["UnblendedCost"],
             GroupBy=[
                 {"Type": "DIMENSION", "Key": "SERVICE"},
                 {"Type": "DIMENSION", "Key": "USAGE_TYPE"}
@@ -112,13 +114,13 @@ def get_detailed_breakdown():
     # Store yesterday costs keyed by (service, usage_type)
     for entry in costs_yesterday:
         service, usage_type = entry["Keys"]
-        cost = float(entry["Metrics"]["BlendedCost"]["Amount"])
+        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
         usage[(service, usage_type)] = {"yesterday": cost, "mtd": 0.0}
 
     # Add MTD costs
     for entry in costs_mtd:
         service, usage_type = entry["Keys"]
-        cost = float(entry["Metrics"]["BlendedCost"]["Amount"])
+        cost = float(entry["Metrics"]["UnblendedCost"]["Amount"])
         if (service, usage_type) in usage:
             usage[(service, usage_type)]["mtd"] = cost
         else:
@@ -155,7 +157,8 @@ def notify(cost_data):
         "Amazon CloudFront": "CDN",
         "AWS Lambda": "Lambda",
         "Amazon CloudWatch": "Logs",
-        "AWS Cost Explorer": "CE"
+        "AWS Cost Explorer": "CE",
+        "AWS Config": "Config"
     }
 
     client = boto3.client('ce', region_name=AWS_REGION)
